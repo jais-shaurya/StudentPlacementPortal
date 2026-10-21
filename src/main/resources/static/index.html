@@ -1,0 +1,133 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Student Placement Portal</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 720px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f3f6fb;
+            color: #172033;
+        }
+        h1 { color: #174ea6; }
+        form, #result {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            margin-top: 20px;
+            box-shadow: 0 2px 12px #00000012;
+        }
+        label { display: block; margin-top: 14px; font-weight: bold; }
+        input {
+            box-sizing: border-box;
+            width: 100%;
+            padding: 10px;
+            margin-top: 5px;
+        }
+        button {
+            margin-top: 22px;
+            padding: 12px 18px;
+            border: 0;
+            border-radius: 6px;
+            background: #174ea6;
+            color: white;
+            cursor: pointer;
+        }
+        #status { font-weight: bold; }
+        li { margin: 8px 0; }
+    </style>
+</head>
+<body>
+    <h1>Student Placement Portal</h1>
+    <p>Enter student details to evaluate placement eligibility.</p>
+
+    <form id="studentForm">
+        <label>Student ID
+            <input name="studentId" value="STU101" required>
+        </label>
+        <label>Student Name
+            <input name="name" value="Aarav Sharma" required>
+        </label>
+        <label>Age
+            <input name="age" type="number" min="1" max="120" value="20" required>
+        </label>
+        <label>CGPA (0–10)
+            <input name="cgpa" type="number" min="0" max="10" step="0.1" value="8.2" required>
+        </label>
+        <label>Active Backlogs
+            <input name="activeBacklogs" type="number" min="0" value="0" required>
+        </label>
+        <label>Aptitude Score (0–100)
+            <input name="aptitudeScore" type="number" min="0" max="100" value="75" required>
+        </label>
+        <label>Department
+            <input name="department" value="Computer Science" required>
+        </label>
+        <button type="submit">Check Eligibility</button>
+    </form>
+
+    <section id="result" hidden aria-live="polite">
+        <h2>Assessment Result</h2>
+        <p>Status: <span id="status"></span></p>
+        <ul id="reasons"></ul>
+    </section>
+
+    <script>
+        const form = document.getElementById("studentForm");
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+
+            const data = Object.fromEntries(new FormData(form).entries());
+            for (const field of ["age", "activeBacklogs", "aptitudeScore"]) {
+                data[field] = Number.parseInt(data[field], 10);
+            }
+            data.cgpa = Number(data.cgpa);
+
+            const resultBox = document.getElementById("result");
+            const status = document.getElementById("status");
+            const reasons = document.getElementById("reasons");
+
+            resultBox.hidden = false;
+            status.textContent = "Checking...";
+            reasons.replaceChildren();
+
+            try {
+                const response = await fetch("/api/eligibility", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(data)
+                });
+
+                if (!response.ok) {
+                    throw new Error("Request failed with HTTP " + response.status);
+                }
+
+                const result = await response.json();
+                status.textContent = result.status;
+
+                for (const reason of result.reasons) {
+                    const item = document.createElement("li");
+                    item.textContent = reason;
+                    reasons.appendChild(item);
+                }
+
+                if (result.reasons.length === 0) {
+                    const item = document.createElement("li");
+                    item.textContent = "No rejection reasons.";
+                    reasons.appendChild(item);
+                }
+            } catch (error) {
+                status.textContent = "Error";
+                const item = document.createElement("li");
+                item.textContent = error.message;
+                reasons.appendChild(item);
+            }
+        });
+    </script>
+</body>
+</html>
