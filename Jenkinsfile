@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -9,57 +8,50 @@ pipeline {
     }
 
     environment {
-        JAVA_HOME = 'C:/Program Files/Eclipse Adoptium/jdk-25.0.3.9-hotspot'
-        MAVEN_HOME = 'C:/Users/Asus/apache-maven-3.9.16-bin/apache-maven-3.9.16'
-        DOCKER_IMAGE = 'jaisshaurya/student-placement-portal'
+        JAVA_HOME      = 'C:\\Program Files\\Eclipse Adoptium\\jdk-25.0.3.9-hotspot'
+        MAVEN_HOME     = 'C:\\Users\\Asus\\apache-maven-3.9.16-bin\\apache-maven-3.9.16'
+        DOCKER_IMAGE   = 'jaisshaurya/student-placement-portal'
         K8S_DEPLOYMENT = 'student-placement-portal-app'
-        K8S_CONTAINER = 'student-placement-portal'
-        K8S_SERVICE = 'student-placement-portal-app-service'
+        K8S_SERVICE    = 'student-placement-portal-app-service'
     }
 
     stages {
+
         stage('Verify Environment') {
             steps {
                 powershell '''
                     $ErrorActionPreference = 'Stop'
 
-                    Write-Host "===== JAVA VERSION ====="
+                    Write-Host "===== VERIFY JAVA ====="
+                    $javaExe = Join-Path $env:JAVA_HOME 'bin\\java.exe'
 
-                    $javaVersionFile = Join-Path $env:TEMP "java-version-$env:BUILD_NUMBER.txt"
-
-                    try {
-                        & "$env:JAVA_HOME\\bin\\java.exe" -version 2> $javaVersionFile
-                        $javaExitCode = $LASTEXITCODE
-
-                        if (Test-Path $javaVersionFile) {
-                            Get-Content $javaVersionFile | ForEach-Object {
-                                Write-Host "$_"
-                            }
-                        }
-
-                        if ($javaExitCode -ne 0) {
-                            throw "Java verification failed with exit code $javaExitCode."
-                        }
-                    }
-                    finally {
-                        Remove-Item $javaVersionFile -Force -ErrorAction SilentlyContinue
+                    if (-not (Test-Path $javaExe)) {
+                        throw "Java executable not found: $javaExe"
                     }
 
-                    Write-Host "===== MAVEN VERSION ====="
+                    Write-Host "Java executable found."
 
-                    & "$env:MAVEN_HOME\\bin\\mvn.cmd" -version
+                    Write-Host "===== VERIFY MAVEN ====="
+                    $mvn = Join-Path $env:MAVEN_HOME 'bin\\mvn.cmd'
+
+                    if (-not (Test-Path $mvn)) {
+                        throw "Maven executable not found: $mvn"
+                    }
+
+                    & $mvn -version
+
                     if ($LASTEXITCODE -ne 0) {
                         throw "Maven verification failed."
                     }
 
-                    Write-Host "===== DOCKER ENGINE ====="
+                    Write-Host "===== VERIFY DOCKER ====="
+                    docker version
 
-                    & docker version
                     if ($LASTEXITCODE -ne 0) {
-                        throw "Jenkins cannot access Docker Engine."
+                        throw "Docker verification failed."
                     }
 
-                    Write-Host "Environment verification passed."
+                    Write-Host "Environment verification succeeded."
                 '''
             }
         }
@@ -69,21 +61,24 @@ pipeline {
                 powershell '''
                     $ErrorActionPreference = 'Stop'
 
-                    if (-not (Test-Path "pom.xml")) {
-                        throw "pom.xml not found in workspace."
-                    }
+                    Write-Host "===== MAVEN CLEAN TEST PACKAGE ====="
 
-                    & "$env:MAVEN_HOME\\bin\\mvn.cmd" clean test package
+                    $mvn = Join-Path $env:MAVEN_HOME 'bin\\mvn.cmd'
+                    & $mvn clean test package
 
                     if ($LASTEXITCODE -ne 0) {
                         throw "Maven build or tests failed."
                     }
 
-                    if (-not (Test-Path "target/student-placement-portal-1.0.0.jar")) {
-                        throw "Executable JAR was not generated."
+                    $jarPath = Join-Path $env:WORKSPACE `
+                        'target\\student-placement-portal-1.0.0.jar'
+
+                    if (-not (Test-Path $jarPath)) {
+                        throw "Expected JAR was not created: $jarPath"
                     }
 
-                    Write-Host "Build and tests passed."
+                    Write-Host "Build and tests succeeded."
+                    Write-Host "JAR: $jarPath"
                 '''
             }
         }
@@ -93,16 +88,13 @@ pipeline {
                 powershell '''
                     $ErrorActionPreference = 'Stop'
 
-                    if (-not (Test-Path "Dockerfile")) {
-                        throw "Dockerfile not found."
-                    }
-
                     $imageTag = "$env:DOCKER_IMAGE`:$env:BUILD_NUMBER"
                     $latestTag = "$env:DOCKER_IMAGE`:latest"
 
-                    Write-Host "Building image $imageTag"
+                    Write-Host "===== BUILD DOCKER IMAGE ====="
+                    Write-Host "Versioned image: $imageTag"
 
-                    & docker build -t $imageTag -t $latestTag .
+                    docker build -t $imageTag -t $latestTag .
 
                     if ($LASTEXITCODE -ne 0) {
                         throw "Docker image build failed."
@@ -124,36 +116,58 @@ pipeline {
                 ]) {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
-                        $dockerConfig = Join-Path $env:WORKSPACE ".docker-config-$env:BUILD_NUMBER"
+
+                        $authDir = Join-Path $env:WORKSPACE `
+                            ".docker-auth-$env:BUILD_NUMBER"
+
+                        $tokenFile = Join-Path $authDir 'stdin.txt'
+                        $dockerExe = (Get-Command docker.exe -ErrorAction Stop).Source
+                        $cmdExe = Join-Path $env:SystemRoot 'System32\\cmd.exe'
 
                         try {
-                            New-Item -ItemType Directory -Path $dockerConfig -Force |
-                                Out-Null
+                            New-Item -ItemType Directory `
+                                -Path $authDir -Force | Out-Null
 
-                            $env:DOCKER_CONFIG = $dockerConfig
+                            # Write the token as UTF-8 without a BOM.
+                            $utf8 = New-Object System.Text.UTF8Encoding($false)
 
-                            Write-Host "Authenticating to Docker Hub..."
+                            [System.IO.File]::WriteAllText(
+                                $tokenFile,
+                                $env:DH_TOKEN + "`n",
+                                $utf8
+                            )
 
-                            $env:DH_TOKEN | & docker login `
-                                --username "$env:DH_USER" `
-                                --password-stdin
+                            Write-Host "===== DOCKER HUB LOGIN ====="
+
+                            # Preserve the working Windows stdin-redirection method.
+                            $dockerArgs = '--config "' + $authDir +
+                                '" login --username "' + $env:DH_USER +
+                                '" --password-stdin < "' + $tokenFile + '"'
+
+                            $cmd = '"' + $dockerExe + '" ' + $dockerArgs
+
+                            & $cmdExe /d /s /c ('"' + $cmd + '"')
 
                             if ($LASTEXITCODE -ne 0) {
-                                throw "Docker Hub authentication failed."
+                                throw "Docker Hub login failed."
                             }
+
+                            Write-Host "DOCKER_CLI_LOGIN_SUCCESS"
 
                             $imageTag = "$env:DOCKER_IMAGE`:$env:BUILD_NUMBER"
                             $latestTag = "$env:DOCKER_IMAGE`:latest"
 
-                            Write-Host "Pushing versioned image..."
-                            & docker push $imageTag
+                            Write-Host "===== PUSH VERSIONED IMAGE ====="
+
+                            & $dockerExe --config $authDir push $imageTag
 
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Versioned image push failed."
                             }
 
-                            Write-Host "Pushing latest image..."
-                            & docker push $latestTag
+                            Write-Host "===== PUSH LATEST IMAGE ====="
+
+                            & $dockerExe --config $authDir push $latestTag
 
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Latest image push failed."
@@ -162,12 +176,12 @@ pipeline {
                             Write-Host "Docker Hub publishing succeeded."
                         }
                         finally {
-                            & docker logout 2>$null | Out-Null
+                            if (Test-Path $authDir) {
+                                & $dockerExe --config $authDir logout 2>$null |
+                                    Out-Null
+                            }
 
-                            Remove-Item -Recurse -Force $dockerConfig `
-                                -ErrorAction SilentlyContinue
-
-                            Remove-Item Env:DOCKER_CONFIG `
+                            Remove-Item -Recurse -Force $authDir `
                                 -ErrorAction SilentlyContinue
                         }
                     '''
@@ -175,7 +189,7 @@ pipeline {
             }
         }
 
-        stage('Deploy to Kubernetes') {
+        stage('Deploy Kubernetes') {
             steps {
                 withCredentials([
                     file(
@@ -185,86 +199,103 @@ pipeline {
                 ]) {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
+
                         $env:KUBECONFIG = $env:KUBECONFIG_FILE
 
-                        $manifestPath = Join-Path $env:WORKSPACE "deployment-ci.yaml"
+                        $manifest = Join-Path $env:WORKSPACE 'deployment.yaml'
+                        $tempManifest = Join-Path $env:WORKSPACE 'deployment-ci.yaml'
 
                         try {
+                            if (-not (Test-Path $manifest)) {
+                                throw "Kubernetes manifest not found: $manifest"
+                            }
+
                             Write-Host "===== KUBERNETES CONTEXT ====="
 
-                            $context = (& kubectl config current-context).Trim()
+                            kubectl config current-context
 
                             if ($LASTEXITCODE -ne 0) {
-                                throw "Could not read Kubernetes context."
+                                throw "Unable to read Kubernetes context."
                             }
 
-                            if ($context -ne "docker-desktop") {
-                                throw "Expected docker-desktop context; found '$context'."
+                            $context = (kubectl config current-context).Trim()
+
+                            if ($context -ne 'docker-desktop') {
+                                throw "Unexpected Kubernetes context: $context"
                             }
 
-                            & kubectl cluster-info
+                            kubectl cluster-info
 
                             if ($LASTEXITCODE -ne 0) {
-                                throw "Kubernetes cluster is unreachable."
+                                throw "Kubernetes cluster is unavailable."
                             }
 
-                            if (-not (Test-Path "deployment.yaml")) {
-                                throw "deployment.yaml not found."
-                            }
+                            Write-Host "===== PREPARE DEPLOYMENT MANIFEST ====="
 
                             $imageTag = "$env:DOCKER_IMAGE`:$env:BUILD_NUMBER"
-                            $manifest = Get-Content "deployment.yaml" -Raw
-                            $originalImage = "jaisshaurya/student-placement-portal:latest"
+                            $yaml = Get-Content -Path $manifest -Raw
 
-                            if (-not $manifest.Contains($originalImage)) {
-                                throw "Expected image placeholder not found in deployment.yaml."
+                            $imagePattern = '(?m)^([ \t]*image:[ \t]*)jaisshaurya/student-placement-portal:\S+[ \t]*$'
+
+                            if ($yaml -notmatch $imagePattern) {
+                                throw "Expected application image entry was not found in deployment.yaml."
                             }
 
-                            $manifest = $manifest.Replace($originalImage, $imageTag)
+                            $yaml = [regex]::Replace(
+                                $yaml,
+                                $imagePattern,
+                                ('$1' + $imageTag)
+                            )
 
-                            Set-Content -Path $manifestPath `
-                                -Value $manifest -Encoding ascii
+                            Set-Content -Path $tempManifest `
+                                -Value $yaml -Encoding UTF8
 
-                            Write-Host "Applying manifest for $imageTag"
+                            Write-Host "Deploying image: $imageTag"
 
-                            & kubectl apply -f $manifestPath
+                            Write-Host "===== APPLY KUBERNETES MANIFEST ====="
+
+                            kubectl apply -f $tempManifest
 
                             if ($LASTEXITCODE -ne 0) {
-                                throw "Kubernetes manifest apply failed."
+                                throw "Kubernetes manifest application failed."
                             }
 
-                            & kubectl rollout status `
+                            Write-Host "===== WAIT FOR ROLLOUT ====="
+
+                            kubectl rollout status `
                                 "deployment/$env:K8S_DEPLOYMENT" `
                                 --timeout=180s
 
                             if ($LASTEXITCODE -ne 0) {
-                                throw "Kubernetes rollout failed."
+                                throw "Kubernetes deployment rollout failed."
                             }
 
-                            & kubectl get deployment $env:K8S_DEPLOYMENT
+                            Write-Host "===== DEPLOYMENT STATUS ====="
+                            kubectl get deployment $env:K8S_DEPLOYMENT
 
                             if ($LASTEXITCODE -ne 0) {
-                                throw "Could not inspect deployment."
+                                throw "Could not retrieve deployment status."
                             }
 
-                            & kubectl get pods `
-                                -l "app=$env:K8S_DEPLOYMENT" -o wide
+                            kubectl get pods -o wide
 
                             if ($LASTEXITCODE -ne 0) {
-                                throw "Could not inspect application pods."
+                                throw "Could not retrieve pod status."
                             }
 
-                            & kubectl get service $env:K8S_SERVICE
+                            kubectl get service $env:K8S_SERVICE
 
                             if ($LASTEXITCODE -ne 0) {
-                                throw "Could not inspect application service."
+                                throw "Could not retrieve service status."
                             }
+
+                            Write-Host "Kubernetes deployment succeeded."
                         }
                         finally {
-                            Remove-Item $manifestPath -Force `
-                                -ErrorAction SilentlyContinue
+                            Remove-Item $tempManifest `
+                                -Force -ErrorAction SilentlyContinue
 
-                            Remove-Item Env:KUBECONFIG `
+                            Remove-Item Env:\\KUBECONFIG `
                                 -ErrorAction SilentlyContinue
                         }
                     '''
@@ -277,19 +308,22 @@ pipeline {
                 powershell '''
                     $ErrorActionPreference = 'Stop'
 
-                    $url = 'http://localhost:30085/api/health'
+                    $healthUrl = 'http://localhost:30085/api/health'
+                    $maxAttempts = 12
                     $healthy = $false
 
-                    for ($attempt = 1; $attempt -le 12; $attempt++) {
+                    Write-Host "===== APPLICATION HEALTH CHECK ====="
+
+                    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
                         try {
                             $response = Invoke-WebRequest `
-                                -Uri $url `
-                                -TimeoutSec 5 `
-                                -UseBasicParsing
+                                -Uri $healthUrl `
+                                -UseBasicParsing `
+                                -TimeoutSec 10
 
                             if ($response.StatusCode -eq 200) {
+                                Write-Host "Response: $($response.Content)"
                                 Write-Host "Application health check passed."
-                                Write-Host $response.Content
                                 $healthy = $true
                                 break
                             }
@@ -298,11 +332,13 @@ pipeline {
                             Write-Host "Health check attempt $attempt failed."
                         }
 
-                        Start-Sleep -Seconds 5
+                        if ($attempt -lt $maxAttempts) {
+                            Start-Sleep -Seconds 5
+                        }
                     }
 
                     if (-not $healthy) {
-                        throw "Application did not return HTTP 200 at $url"
+                        throw "Application health check failed after $maxAttempts attempts."
                     }
                 '''
             }
@@ -311,30 +347,24 @@ pipeline {
 
     post {
         always {
-            script {
-                if (fileExists('target/surefire-reports')) {
-                    junit(
-                        testResults: 'target/surefire-reports/*.xml',
-                        allowEmptyResults: true
-                    )
-                } else {
-                    echo 'No Maven test reports were produced.'
-                }
+            junit(
+                testResults: '**/target/surefire-reports/*.xml',
+                allowEmptyResults: true
+            )
 
-                archiveArtifacts(
-                    artifacts: 'target/*.jar',
-                    fingerprint: true,
-                    allowEmptyArchive: true
-                )
-            }
+            archiveArtifacts(
+                artifacts: 'target/student-placement-portal-1.0.0.jar',
+                allowEmptyArchive: true,
+                fingerprint: true
+            )
         }
 
         success {
-            echo 'CI/CD succeeded: build, tests, Docker Hub push, Kubernetes deployment and health check.'
+            echo 'CI/CD succeeded: SCM checkout, tests, Docker publishing, Kubernetes deployment and health verification.'
         }
 
         failure {
-            echo 'CI/CD failed. Inspect the first failing stage in Console Output.'
+            echo 'CI/CD failed. Check the stage logs above to identify the failure.'
         }
     }
 }
