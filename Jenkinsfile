@@ -24,22 +24,36 @@ pipeline {
                     $ErrorActionPreference = 'Stop'
 
                     Write-Host "===== JAVA VERSION ====="
-                    $javaOutput = & "$env:JAVA_HOME\\bin\\java.exe" -version 2>&1
-                    $javaExitCode = $LASTEXITCODE
 
-                    $javaOutput | ForEach-Object { Write-Host "$_" }
+                    $javaVersionFile = Join-Path $env:TEMP "java-version-$env:BUILD_NUMBER.txt"
 
-                    if ($javaExitCode -ne 0) {
-                        throw "Java verification failed with exit code $javaExitCode."
+                    try {
+                        & "$env:JAVA_HOME\\bin\\java.exe" -version 2> $javaVersionFile
+                        $javaExitCode = $LASTEXITCODE
+
+                        if (Test-Path $javaVersionFile) {
+                            Get-Content $javaVersionFile | ForEach-Object {
+                                Write-Host "$_"
+                            }
+                        }
+
+                        if ($javaExitCode -ne 0) {
+                            throw "Java verification failed with exit code $javaExitCode."
+                        }
+                    }
+                    finally {
+                        Remove-Item $javaVersionFile -Force -ErrorAction SilentlyContinue
                     }
 
                     Write-Host "===== MAVEN VERSION ====="
+
                     & "$env:MAVEN_HOME\\bin\\mvn.cmd" -version
                     if ($LASTEXITCODE -ne 0) {
                         throw "Maven verification failed."
                     }
 
                     Write-Host "===== DOCKER ENGINE ====="
+
                     & docker version
                     if ($LASTEXITCODE -ne 0) {
                         throw "Jenkins cannot access Docker Engine."
@@ -60,6 +74,7 @@ pipeline {
                     }
 
                     & "$env:MAVEN_HOME\\bin\\mvn.cmd" clean test package
+
                     if ($LASTEXITCODE -ne 0) {
                         throw "Maven build or tests failed."
                     }
@@ -88,6 +103,7 @@ pipeline {
                     Write-Host "Building image $imageTag"
 
                     & docker build -t $imageTag -t $latestTag .
+
                     if ($LASTEXITCODE -ne 0) {
                         throw "Docker image build failed."
                     }
@@ -113,6 +129,7 @@ pipeline {
                         try {
                             New-Item -ItemType Directory -Path $dockerConfig -Force |
                                 Out-Null
+
                             $env:DOCKER_CONFIG = $dockerConfig
 
                             Write-Host "Authenticating to Docker Hub..."
@@ -130,12 +147,14 @@ pipeline {
 
                             Write-Host "Pushing versioned image..."
                             & docker push $imageTag
+
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Versioned image push failed."
                             }
 
                             Write-Host "Pushing latest image..."
                             & docker push $latestTag
+
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Latest image push failed."
                             }
@@ -147,6 +166,7 @@ pipeline {
 
                             Remove-Item -Recurse -Force $dockerConfig `
                                 -ErrorAction SilentlyContinue
+
                             Remove-Item Env:DOCKER_CONFIG `
                                 -ErrorAction SilentlyContinue
                         }
@@ -166,10 +186,12 @@ pipeline {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
                         $env:KUBECONFIG = $env:KUBECONFIG_FILE
+
                         $manifestPath = Join-Path $env:WORKSPACE "deployment-ci.yaml"
 
                         try {
                             Write-Host "===== KUBERNETES CONTEXT ====="
+
                             $context = (& kubectl config current-context).Trim()
 
                             if ($LASTEXITCODE -ne 0) {
@@ -181,6 +203,7 @@ pipeline {
                             }
 
                             & kubectl cluster-info
+
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Kubernetes cluster is unreachable."
                             }
@@ -198,10 +221,14 @@ pipeline {
                             }
 
                             $manifest = $manifest.Replace($originalImage, $imageTag)
-                            Set-Content -Path $manifestPath -Value $manifest -Encoding ascii
+
+                            Set-Content -Path $manifestPath `
+                                -Value $manifest -Encoding ascii
 
                             Write-Host "Applying manifest for $imageTag"
+
                             & kubectl apply -f $manifestPath
+
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Kubernetes manifest apply failed."
                             }
@@ -215,23 +242,30 @@ pipeline {
                             }
 
                             & kubectl get deployment $env:K8S_DEPLOYMENT
+
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Could not inspect deployment."
                             }
 
-                            & kubectl get pods -l "app=$env:K8S_DEPLOYMENT" -o wide
+                            & kubectl get pods `
+                                -l "app=$env:K8S_DEPLOYMENT" -o wide
+
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Could not inspect application pods."
                             }
 
                             & kubectl get service $env:K8S_SERVICE
+
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Could not inspect application service."
                             }
                         }
                         finally {
-                            Remove-Item $manifestPath -Force -ErrorAction SilentlyContinue
-                            Remove-Item Env:KUBECONFIG -ErrorAction SilentlyContinue
+                            Remove-Item $manifestPath -Force `
+                                -ErrorAction SilentlyContinue
+
+                            Remove-Item Env:KUBECONFIG `
+                                -ErrorAction SilentlyContinue
                         }
                     '''
                 }
@@ -242,13 +276,16 @@ pipeline {
             steps {
                 powershell '''
                     $ErrorActionPreference = 'Stop'
+
                     $url = 'http://localhost:30085/api/health'
                     $healthy = $false
 
                     for ($attempt = 1; $attempt -le 12; $attempt++) {
                         try {
                             $response = Invoke-WebRequest `
-                                -Uri $url -TimeoutSec 5 -UseBasicParsing
+                                -Uri $url `
+                                -TimeoutSec 5 `
+                                -UseBasicParsing
 
                             if ($response.StatusCode -eq 200) {
                                 Write-Host "Application health check passed."
@@ -276,15 +313,19 @@ pipeline {
         always {
             script {
                 if (fileExists('target/surefire-reports')) {
-                    junit testResults: 'target/surefire-reports/*.xml',
-                          allowEmptyResults: true
+                    junit(
+                        testResults: 'target/surefire-reports/*.xml',
+                        allowEmptyResults: true
+                    )
                 } else {
                     echo 'No Maven test reports were produced.'
                 }
 
-                archiveArtifacts artifacts: 'target/*.jar',
-                                 fingerprint: true,
-                                 allowEmptyArchive: true
+                archiveArtifacts(
+                    artifacts: 'target/*.jar',
+                    fingerprint: true,
+                    allowEmptyArchive: true
+                )
             }
         }
 
