@@ -24,16 +24,17 @@ pipeline {
                     $ErrorActionPreference = 'Stop'
 
                     Write-Host "===== JAVA VERSION ====="
-                    & "$env:JAVA_HOME\\bin\\java.exe" -version 2>&1 |
-                        ForEach-Object { Write-Host $_ }
+                    $javaOutput = & "$env:JAVA_HOME\\bin\\java.exe" -version 2>&1
+                    $javaExitCode = $LASTEXITCODE
 
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "Java verification failed."
+                    $javaOutput | ForEach-Object { Write-Host "$_" }
+
+                    if ($javaExitCode -ne 0) {
+                        throw "Java verification failed with exit code $javaExitCode."
                     }
 
                     Write-Host "===== MAVEN VERSION ====="
                     & "$env:MAVEN_HOME\\bin\\mvn.cmd" -version
-
                     if ($LASTEXITCODE -ne 0) {
                         throw "Maven verification failed."
                     }
@@ -55,11 +56,10 @@ pipeline {
                     $ErrorActionPreference = 'Stop'
 
                     if (-not (Test-Path "pom.xml")) {
-                        throw "pom.xml not found in the workspace."
+                        throw "pom.xml not found in workspace."
                     }
 
                     & "$env:MAVEN_HOME\\bin\\mvn.cmd" clean test package
-
                     if ($LASTEXITCODE -ne 0) {
                         throw "Maven build or tests failed."
                     }
@@ -68,7 +68,7 @@ pipeline {
                         throw "Executable JAR was not generated."
                     }
 
-                    Write-Host "Build and test stage succeeded."
+                    Write-Host "Build and tests passed."
                 '''
             }
         }
@@ -85,10 +85,9 @@ pipeline {
                     $imageTag = "$env:DOCKER_IMAGE`:$env:BUILD_NUMBER"
                     $latestTag = "$env:DOCKER_IMAGE`:latest"
 
-                    Write-Host "Building $imageTag"
+                    Write-Host "Building image $imageTag"
 
                     & docker build -t $imageTag -t $latestTag .
-
                     if ($LASTEXITCODE -ne 0) {
                         throw "Docker image build failed."
                     }
@@ -112,9 +111,8 @@ pipeline {
                         $dockerConfig = Join-Path $env:WORKSPACE ".docker-config-$env:BUILD_NUMBER"
 
                         try {
-                            New-Item -ItemType Directory `
-                                -Path $dockerConfig -Force | Out-Null
-
+                            New-Item -ItemType Directory -Path $dockerConfig -Force |
+                                Out-Null
                             $env:DOCKER_CONFIG = $dockerConfig
 
                             Write-Host "Authenticating to Docker Hub..."
@@ -132,14 +130,12 @@ pipeline {
 
                             Write-Host "Pushing versioned image..."
                             & docker push $imageTag
-
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Versioned image push failed."
                             }
 
                             Write-Host "Pushing latest image..."
                             & docker push $latestTag
-
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Latest image push failed."
                             }
@@ -151,7 +147,6 @@ pipeline {
 
                             Remove-Item -Recurse -Force $dockerConfig `
                                 -ErrorAction SilentlyContinue
-
                             Remove-Item Env:DOCKER_CONFIG `
                                 -ErrorAction SilentlyContinue
                         }
@@ -171,12 +166,10 @@ pipeline {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
                         $env:KUBECONFIG = $env:KUBECONFIG_FILE
-
                         $manifestPath = Join-Path $env:WORKSPACE "deployment-ci.yaml"
 
                         try {
                             Write-Host "===== KUBERNETES CONTEXT ====="
-
                             $context = (& kubectl config current-context).Trim()
 
                             if ($LASTEXITCODE -ne 0) {
@@ -188,7 +181,6 @@ pipeline {
                             }
 
                             & kubectl cluster-info
-
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Kubernetes cluster is unreachable."
                             }
@@ -199,7 +191,6 @@ pipeline {
 
                             $imageTag = "$env:DOCKER_IMAGE`:$env:BUILD_NUMBER"
                             $manifest = Get-Content "deployment.yaml" -Raw
-
                             $originalImage = "jaisshaurya/student-placement-portal:latest"
 
                             if (-not $manifest.Contains($originalImage)) {
@@ -207,18 +198,14 @@ pipeline {
                             }
 
                             $manifest = $manifest.Replace($originalImage, $imageTag)
+                            Set-Content -Path $manifestPath -Value $manifest -Encoding ascii
 
-                            Set-Content -Path $manifestPath `
-                                -Value $manifest -Encoding ascii
-
-                            Write-Host "Applying Kubernetes manifest..."
+                            Write-Host "Applying manifest for $imageTag"
                             & kubectl apply -f $manifestPath
-
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Kubernetes manifest apply failed."
                             }
 
-                            Write-Host "Waiting for deployment rollout..."
                             & kubectl rollout status `
                                 "deployment/$env:K8S_DEPLOYMENT" `
                                 --timeout=180s
@@ -227,32 +214,24 @@ pipeline {
                                 throw "Kubernetes rollout failed."
                             }
 
-                            Write-Host "===== DEPLOYMENT STATUS ====="
                             & kubectl get deployment $env:K8S_DEPLOYMENT
-
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Could not inspect deployment."
                             }
 
-                            & kubectl get pods `
-                                -l "app=$env:K8S_DEPLOYMENT" -o wide
-
+                            & kubectl get pods -l "app=$env:K8S_DEPLOYMENT" -o wide
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Could not inspect application pods."
                             }
 
                             & kubectl get service $env:K8S_SERVICE
-
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Could not inspect application service."
                             }
                         }
                         finally {
-                            Remove-Item $manifestPath -Force `
-                                -ErrorAction SilentlyContinue
-
-                            Remove-Item Env:KUBECONFIG `
-                                -ErrorAction SilentlyContinue
+                            Remove-Item $manifestPath -Force -ErrorAction SilentlyContinue
+                            Remove-Item Env:KUBECONFIG -ErrorAction SilentlyContinue
                         }
                     '''
                 }
@@ -269,9 +248,7 @@ pipeline {
                     for ($attempt = 1; $attempt -le 12; $attempt++) {
                         try {
                             $response = Invoke-WebRequest `
-                                -Uri $url `
-                                -TimeoutSec 5 `
-                                -UseBasicParsing
+                                -Uri $url -TimeoutSec 5 -UseBasicParsing
 
                             if ($response.StatusCode -eq 200) {
                                 Write-Host "Application health check passed."
