@@ -78,7 +78,6 @@ pipeline {
                     }
 
                     Write-Host "Build and tests succeeded."
-                    Write-Host "JAR: $jarPath"
                 '''
             }
         }
@@ -92,7 +91,6 @@ pipeline {
                     $latestTag = "$env:DOCKER_IMAGE`:latest"
 
                     Write-Host "===== BUILD DOCKER IMAGE ====="
-                    Write-Host "Versioned image: $imageTag"
 
                     docker build -t $imageTag -t $latestTag .
 
@@ -128,7 +126,7 @@ pipeline {
                             New-Item -ItemType Directory `
                                 -Path $authDir -Force | Out-Null
 
-                            # Write the token as UTF-8 without a BOM.
+                            # Write UTF-8 without a BOM.
                             $utf8 = New-Object System.Text.UTF8Encoding($false)
 
                             [System.IO.File]::WriteAllText(
@@ -139,7 +137,7 @@ pipeline {
 
                             Write-Host "===== DOCKER HUB LOGIN ====="
 
-                            # Preserve the working Windows stdin-redirection method.
+                            # Keep the proven Windows stdin-redirection method.
                             $dockerArgs = '--config "' + $authDir +
                                 '" login --username "' + $env:DH_USER +
                                 '" --password-stdin < "' + $tokenFile + '"'
@@ -235,7 +233,8 @@ pipeline {
                             $imageTag = "$env:DOCKER_IMAGE`:$env:BUILD_NUMBER"
                             $yaml = Get-Content -Path $manifest -Raw
 
-                            $imagePattern = '(?m)^([ \t]*image:[ \t]*)jaisshaurya/student-placement-portal:\S+[ \t]*$'
+                            # Avoid Groovy-invalid backslash escapes.
+                            $imagePattern = '(?m)^([ ]*image:[ ]*)jaisshaurya/student-placement-portal:[^ ]+[ ]*$'
 
                             if ($yaml -notmatch $imagePattern) {
                                 throw "Expected application image entry was not found in deployment.yaml."
@@ -271,6 +270,7 @@ pipeline {
                             }
 
                             Write-Host "===== DEPLOYMENT STATUS ====="
+
                             kubectl get deployment $env:K8S_DEPLOYMENT
 
                             if ($LASTEXITCODE -ne 0) {
@@ -360,7 +360,7 @@ pipeline {
         }
 
         success {
-            echo 'CI/CD succeeded: SCM checkout, tests, Docker publishing, Kubernetes deployment and health verification.'
+            echo 'CI/CD succeeded: automatic SCM checkout, tests, Docker publishing, Kubernetes deployment and health verification.'
         }
 
         failure {
